@@ -321,6 +321,8 @@ pub struct ClientHandler;
 pub struct RunningClientHandler {
     stream: TcpStream,
     peer: SocketAddr,
+    real_peer_from_proxy: Option<SocketAddr>,
+    real_peer_report: Arc<std::sync::Mutex<Option<SocketAddr>>>,
     config: Arc<ProxyConfig>,
     stats: Arc<Stats>,
     replay_checker: Arc<ReplayChecker>,
@@ -351,10 +353,14 @@ impl ClientHandler {
         ip_tracker: Arc<UserIpTracker>,
         beobachten: Arc<BeobachtenStore>,
         proxy_protocol_enabled: bool,
+        real_peer_report: Arc<std::sync::Mutex<Option<SocketAddr>>>,
     ) -> RunningClientHandler {
+        let normalized_peer = normalize_ip(peer);
         RunningClientHandler {
             stream,
-            peer,
+            peer: normalized_peer,
+            real_peer_from_proxy: None,
+            real_peer_report,
             config,
             stats,
             replay_checker,
@@ -372,10 +378,8 @@ impl ClientHandler {
 }
 
 impl RunningClientHandler {
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
         self.stats.increment_connects_all();
-
-        self.peer = normalize_ip(self.peer);
         let peer = self.peer;
         let _ip_tracker = self.ip_tracker.clone();
         debug!(peer = %peer, "New connection");
@@ -448,6 +452,10 @@ impl RunningClientHandler {
                         "PROXY protocol header parsed"
                     );
                     self.peer = normalize_ip(info.src_addr);
+                    self.real_peer_from_proxy = Some(self.peer);
+                    if let Ok(mut slot) = self.real_peer_report.lock() {
+                        *slot = Some(self.peer);
+                    }
                     if let Some(dst) = info.dst_addr {
                         local_addr = dst;
                     }

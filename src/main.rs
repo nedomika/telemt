@@ -2121,6 +2121,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         let ip_tracker = ip_tracker.clone();
                         let beobachten = beobachten.clone();
                         let proxy_protocol_enabled = listener_proxy_protocol;
+                        let real_peer_report = Arc::new(std::sync::Mutex::new(None));
+                        let real_peer_report_for_handler = real_peer_report.clone();
 
                         tokio::spawn(async move {
                             let _permit = permit;
@@ -2139,10 +2141,15 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 ip_tracker,
                                 beobachten,
                                 proxy_protocol_enabled,
+                                real_peer_report_for_handler,
                             )
                             .run()
                             .await
                             {
+                                let real_peer = match real_peer_report.lock() {
+                                    Ok(guard) => *guard,
+                                    Err(_) => None,
+                                };
                                 let peer_closed = matches!(
                                     &e,
                                     crate::error::ProxyError::Io(ioe)
@@ -2177,15 +2184,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                 );
 
                                 match (peer_closed, me_closed) {
-                                    (true, _) => debug!(peer = %peer_addr, error = %e, "Connection closed by client"),
-                                    (_, true) => warn!(peer = %peer_addr, error = %e, "Connection closed: Middle-End dropped session"),
+                                    (true, _) => {
+                                        if let Some(real_peer) = real_peer {
+                                            debug!(peer = %peer_addr, real_peer = %real_peer, error = %e, "Connection closed by client");
+                                        } else {
+                                            debug!(peer = %peer_addr, error = %e, "Connection closed by client");
+                                        }
+                                    }
+                                    (_, true) => {
+                                        if let Some(real_peer) = real_peer {
+                                            warn!(peer = %peer_addr, real_peer = %real_peer, error = %e, "Connection closed: Middle-End dropped session");
+                                        } else {
+                                            warn!(peer = %peer_addr, error = %e, "Connection closed: Middle-End dropped session");
+                                        }
+                                    }
                                     _ if route_switched => {
-                                        info!(peer = %peer_addr, error = %e, "Connection closed by controlled route cutover")
+                                        if let Some(real_peer) = real_peer {
+                                            info!(peer = %peer_addr, real_peer = %real_peer, error = %e, "Connection closed by controlled route cutover");
+                                        } else {
+                                            info!(peer = %peer_addr, error = %e, "Connection closed by controlled route cutover");
+                                        }
                                     }
                                     _ if is_expected_handshake_eof(&e) => {
-                                        info!(peer = %peer_addr, error = %e, "Connection closed during initial handshake")
+                                        if let Some(real_peer) = real_peer {
+                                            info!(peer = %peer_addr, real_peer = %real_peer, error = %e, "Connection closed during initial handshake");
+                                        } else {
+                                            info!(peer = %peer_addr, error = %e, "Connection closed during initial handshake");
+                                        }
                                     }
-                                    _ => warn!(peer = %peer_addr, error = %e, "Connection closed with error"),
+                                    _ => {
+                                        if let Some(real_peer) = real_peer {
+                                            warn!(peer = %peer_addr, real_peer = %real_peer, error = %e, "Connection closed with error");
+                                        } else {
+                                            warn!(peer = %peer_addr, error = %e, "Connection closed with error");
+                                        }
+                                    }
                                 }
                             }
                         });
