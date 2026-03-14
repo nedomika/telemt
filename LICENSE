@@ -2,11 +2,12 @@
 ##### Copyright (c) 2026 Telemt #####
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software WITHOUT restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions.
+of this Software and associated documentation files (the "Software"),
+to use, reproduce, modify, prepare derivative works of, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, provided that all
+copyright notices, license terms, and conditions set forth in this License
+are preserved and complied with.
 
 ### Definitions
 
@@ -123,7 +124,7 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
 USE OR OTHER DEALINGS IN THE SOFTWARE
 
-IF ANY OF PROVISION OF THIS LICENSE IS HELD TO BE INVALID OR UNENFORCEABLE,
+IF ANY PROVISION OF THIS LICENSE IS HELD TO BE INVALID OR UNENFORCEABLE,
 SUCH PROVISION SHALL BE INTERPRETED TO REFLECT THE ORIGINAL INTENT
 OF THE PARTIES AS CLOSELY AS POSSIBLE, AND THE REMAINING PROVISIONS
 SHALL REMAIN IN FULL FORCE AND EFFECT
