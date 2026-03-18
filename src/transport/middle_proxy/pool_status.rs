@@ -124,6 +124,11 @@ pub(crate) struct MeApiRuntimeSnapshot {
     pub me_reconnect_backoff_cap_ms: u64,
     pub me_reconnect_fast_retry_count: u32,
     pub me_pool_drain_ttl_secs: u64,
+    pub me_pool_drain_soft_evict_enabled: bool,
+    pub me_pool_drain_soft_evict_grace_secs: u64,
+    pub me_pool_drain_soft_evict_per_writer: u8,
+    pub me_pool_drain_soft_evict_budget_per_core: u16,
+    pub me_pool_drain_soft_evict_cooldown_ms: u64,
     pub me_pool_force_close_secs: u64,
     pub me_pool_min_fresh_ratio: f32,
     pub me_bind_stale_mode: &'static str,
@@ -562,6 +567,22 @@ impl MePool {
             me_reconnect_backoff_cap_ms: self.me_reconnect_backoff_cap.as_millis() as u64,
             me_reconnect_fast_retry_count: self.me_reconnect_fast_retry_count,
             me_pool_drain_ttl_secs: self.me_pool_drain_ttl_secs.load(Ordering::Relaxed),
+            me_pool_drain_soft_evict_enabled: self
+                .me_pool_drain_soft_evict_enabled
+                .load(Ordering::Relaxed),
+            me_pool_drain_soft_evict_grace_secs: self
+                .me_pool_drain_soft_evict_grace_secs
+                .load(Ordering::Relaxed),
+            me_pool_drain_soft_evict_per_writer: self
+                .me_pool_drain_soft_evict_per_writer
+                .load(Ordering::Relaxed),
+            me_pool_drain_soft_evict_budget_per_core: self
+                .me_pool_drain_soft_evict_budget_per_core
+                .load(Ordering::Relaxed)
+                .min(u16::MAX as u32) as u16,
+            me_pool_drain_soft_evict_cooldown_ms: self
+                .me_pool_drain_soft_evict_cooldown_ms
+                .load(Ordering::Relaxed),
             me_pool_force_close_secs: self.me_pool_force_close_secs.load(Ordering::Relaxed),
             me_pool_min_fresh_ratio: Self::permille_to_ratio(
                 self.me_pool_min_fresh_ratio_permille.load(Ordering::Relaxed),

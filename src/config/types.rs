@@ -803,6 +803,26 @@ pub struct GeneralConfig {
     #[serde(default = "default_me_pool_drain_threshold")]
     pub me_pool_drain_threshold: u64,
 
+    /// Enable staged client eviction for draining ME writers that remain non-empty past TTL.
+    #[serde(default = "default_me_pool_drain_soft_evict_enabled")]
+    pub me_pool_drain_soft_evict_enabled: bool,
+
+    /// Extra grace in seconds after drain TTL before soft-eviction stage starts.
+    #[serde(default = "default_me_pool_drain_soft_evict_grace_secs")]
+    pub me_pool_drain_soft_evict_grace_secs: u64,
+
+    /// Maximum number of client sessions to evict from one draining writer per health tick.
+    #[serde(default = "default_me_pool_drain_soft_evict_per_writer")]
+    pub me_pool_drain_soft_evict_per_writer: u8,
+
+    /// Soft-eviction budget per CPU core for one health tick.
+    #[serde(default = "default_me_pool_drain_soft_evict_budget_per_core")]
+    pub me_pool_drain_soft_evict_budget_per_core: u16,
+
+    /// Cooldown for repetitive soft-eviction on the same writer in milliseconds.
+    #[serde(default = "default_me_pool_drain_soft_evict_cooldown_ms")]
+    pub me_pool_drain_soft_evict_cooldown_ms: u64,
+
     /// Policy for new binds on stale draining writers.
     #[serde(default)]
     pub me_bind_stale_mode: MeBindStaleMode,
@@ -984,6 +1004,13 @@ impl Default for GeneralConfig {
             proxy_secret_len_max: default_proxy_secret_len_max(),
             me_pool_drain_ttl_secs: default_me_pool_drain_ttl_secs(),
             me_pool_drain_threshold: default_me_pool_drain_threshold(),
+            me_pool_drain_soft_evict_enabled: default_me_pool_drain_soft_evict_enabled(),
+            me_pool_drain_soft_evict_grace_secs: default_me_pool_drain_soft_evict_grace_secs(),
+            me_pool_drain_soft_evict_per_writer: default_me_pool_drain_soft_evict_per_writer(),
+            me_pool_drain_soft_evict_budget_per_core:
+                default_me_pool_drain_soft_evict_budget_per_core(),
+            me_pool_drain_soft_evict_cooldown_ms:
+                default_me_pool_drain_soft_evict_cooldown_ms(),
             me_bind_stale_mode: MeBindStaleMode::default(),
             me_bind_stale_ttl_secs: default_me_bind_stale_ttl_secs(),
             me_pool_min_fresh_ratio: default_me_pool_min_fresh_ratio(),

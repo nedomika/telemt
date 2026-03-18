@@ -20,6 +20,8 @@ use crate::proxy::route_mode::{
     RelayRouteMode, RouteCutoverState, ROUTE_SWITCH_ERROR_MSG, affected_cutover_state,
     cutover_stagger_delay,
 };
+use crate::proxy::adaptive_buffers::{self, AdaptiveTier};
+use crate::proxy::session_eviction::SessionLease;
 use crate::stats::Stats;
 use crate::stream::{BufferPool, CryptoReader, CryptoWriter};
 use crate::transport::middle_proxy::{MePool, MeResponse, proto_flags_for_tag};
@@ -59,8 +61,8 @@ struct MeD2cFlushPolicy {
 }
 
 impl MeD2cFlushPolicy {
-    fn from_config(config: &ProxyConfig) -> Self {
-        Self {
+    fn from_config(config: &ProxyConfig, tier: AdaptiveTier) -> Self {
+        let base = Self {
             max_frames: config
                 .general
                 .me_d2c_flush_batch_max_frames
@@ -71,6 +73,18 @@ impl MeD2cFlushPolicy {
                 .max(ME_D2C_FLUSH_BATCH_MAX_BYTES_MIN),
             max_delay: Duration::from_micros(config.general.me_d2c_flush_batch_max_delay_us),
             ack_flush_immediate: config.general.me_d2c_ack_flush_immediate,
+        };
+        let (max_frames, max_bytes, max_delay) = adaptive_buffers::me_flush_policy_for_tier(
+            tier,
+            base.max_frames,
+            base.max_bytes,
+            base.max_delay,
+        );
+        Self {
+            max_frames,
+            max_bytes,
+            max_delay,
+            ack_flush_immediate: base.ack_flush_immediate,
         }
     }
 }
@@ -235,6 +249,7 @@ pub(crate) async fn handle_via_middle_proxy<R, W>(
     mut route_rx: watch::Receiver<RouteCutoverState>,
     route_snapshot: RouteCutoverState,
     session_id: u64,
+    session_lease: SessionLease,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -244,6 +259,7 @@ where
     let peer = success.peer;
     let proto_tag = success.proto_tag;
     let pool_generation = me_pool.current_generation();
+    let seed_tier = adaptive_buffers::seed_tier_for_user(&user);
 
     debug!(
         user = %user,
@@ -293,6 +309,15 @@ where
         stats.decrement_current_connections_me();
         stats.decrement_user_curr_connects(&user);
         return Err(ProxyError::Proxy(ROUTE_SWITCH_ERROR_MSG.to_string()));
+    }
+
+    if session_lease.is_stale() {
+        stats.increment_reconnect_stale_close_total();
+        let _ = me_pool.send_close(conn_id).await;
+        me_pool.registry().unregister(conn_id).await;
+        stats.decrement_current_connections_me();
+        stats.decrement_user_curr_connects(&user);
+        return Err(ProxyError::Proxy("Session evicted by reconnect".to_string()));
     }
 
     // Per-user ad_tag from access.user_ad_tags; fallback to general.ad_tag (hot-reloadable)
@@ -368,7 +393,7 @@ where
     let rng_clone = rng.clone();
     let user_clone = user.clone();
     let bytes_me2c_clone = bytes_me2c.clone();
-    let d2c_flush_policy = MeD2cFlushPolicy::from_config(&config);
+    let d2c_flush_policy = MeD2cFlushPolicy::from_config(&config, seed_tier);
     let me_writer = tokio::spawn(async move {
         let mut writer = crypto_writer;
         let mut frame_buf = Vec::with_capacity(16 * 1024);
@@ -528,6 +553,12 @@ where
     let mut frame_counter: u64 = 0;
     let mut route_watch_open = true;
     loop {
+        if session_lease.is_stale() {
+            stats.increment_reconnect_stale_close_total();
+            let _ = enqueue_c2me_command(&c2me_tx, C2MeCommand::Close).await;
+            main_result = Err(ProxyError::Proxy("Session evicted by reconnect".to_string()));
+            break;
+        }
         if let Some(cutover) = affected_cutover_state(
             &route_rx,
             RelayRouteMode::Middle,
@@ -636,6 +667,7 @@ where
         frames_ok = frame_counter,
         "ME relay cleanup"
     );
+    adaptive_buffers::record_user_tier(&user, seed_tier);
     me_pool.registry().unregister(conn_id).await;
     stats.decrement_current_connections_me();
     stats.decrement_user_curr_connects(&user);

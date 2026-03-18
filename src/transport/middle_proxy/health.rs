@@ -28,6 +28,8 @@ const HEALTH_RECONNECT_BUDGET_MAX: usize = 128;
 const HEALTH_DRAIN_CLOSE_BUDGET_PER_CORE: usize = 16;
 const HEALTH_DRAIN_CLOSE_BUDGET_MIN: usize = 16;
 const HEALTH_DRAIN_CLOSE_BUDGET_MAX: usize = 256;
+const HEALTH_DRAIN_SOFT_EVICT_BUDGET_MIN: usize = 8;
+const HEALTH_DRAIN_SOFT_EVICT_BUDGET_MAX: usize = 256;
 
 #[derive(Debug, Clone)]
 struct DcFloorPlanEntry {
@@ -66,6 +68,7 @@ pub async fn me_health_monitor(pool: Arc<MePool>, rng: Arc<SecureRandom>, _min_c
     let mut adaptive_recover_until: HashMap<(i32, IpFamily), Instant> = HashMap::new();
     let mut floor_warn_next_allowed: HashMap<(i32, IpFamily), Instant> = HashMap::new();
     let mut drain_warn_next_allowed: HashMap<u64, Instant> = HashMap::new();
+    let mut drain_soft_evict_next_allowed: HashMap<u64, Instant> = HashMap::new();
     let mut degraded_interval = true;
     loop {
         let interval = if degraded_interval {
@@ -75,7 +78,12 @@ pub async fn me_health_monitor(pool: Arc<MePool>, rng: Arc<SecureRandom>, _min_c
         };
         tokio::time::sleep(interval).await;
         pool.prune_closed_writers().await;
-        reap_draining_writers(&pool, &mut drain_warn_next_allowed).await;
+        reap_draining_writers(
+            &pool,
+            &mut drain_warn_next_allowed,
+            &mut drain_soft_evict_next_allowed,
+        )
+        .await;
         let v4_degraded = check_family(
             IpFamily::V4,
             &pool,
@@ -117,6 +125,7 @@ pub async fn me_health_monitor(pool: Arc<MePool>, rng: Arc<SecureRandom>, _min_c
 pub(super) async fn reap_draining_writers(
     pool: &Arc<MePool>,
     warn_next_allowed: &mut HashMap<u64, Instant>,
+    soft_evict_next_allowed: &mut HashMap<u64, Instant>,
 ) {
     let now_epoch_secs = MePool::now_epoch_secs();
     let now = Instant::now();
@@ -172,7 +181,7 @@ pub(super) async fn reap_draining_writers(
     }
 
     let mut active_draining_writer_ids = HashSet::with_capacity(draining_writers.len());
-    for writer in draining_writers {
+    for writer in &draining_writers {
         active_draining_writer_ids.insert(writer.id);
         let drain_started_at_epoch_secs = writer
             .draining_started_at_epoch_secs
@@ -209,6 +218,86 @@ pub(super) async fn reap_draining_writers(
     }
 
     warn_next_allowed.retain(|writer_id, _| active_draining_writer_ids.contains(writer_id));
+    soft_evict_next_allowed.retain(|writer_id, _| active_draining_writer_ids.contains(writer_id));
+
+    if pool.drain_soft_evict_enabled() && drain_ttl_secs > 0 && !draining_writers.is_empty() {
+        let mut force_close_ids = HashSet::<u64>::with_capacity(force_close_writer_ids.len());
+        for writer_id in &force_close_writer_ids {
+            force_close_ids.insert(*writer_id);
+        }
+        let soft_grace_secs = pool.drain_soft_evict_grace_secs();
+        let soft_trigger_age_secs = drain_ttl_secs.saturating_add(soft_grace_secs);
+        let per_writer_limit = pool.drain_soft_evict_per_writer();
+        let soft_budget = health_drain_soft_evict_budget(pool);
+        let soft_cooldown = pool.drain_soft_evict_cooldown();
+        let mut soft_evicted_total = 0usize;
+
+        for writer in &draining_writers {
+            if soft_evicted_total >= soft_budget {
+                break;
+            }
+            if force_close_ids.contains(&writer.id) {
+                continue;
+            }
+            if pool.writer_accepts_new_binding(writer) {
+                continue;
+            }
+            let started_epoch_secs = writer
+                .draining_started_at_epoch_secs
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if started_epoch_secs == 0
+                || now_epoch_secs.saturating_sub(started_epoch_secs) < soft_trigger_age_secs
+            {
+                continue;
+            }
+            if !should_emit_writer_warn(
+                soft_evict_next_allowed,
+                writer.id,
+                now,
+                soft_cooldown,
+            ) {
+                continue;
+            }
+
+            let remaining_budget = soft_budget.saturating_sub(soft_evicted_total);
+            let limit = per_writer_limit.min(remaining_budget);
+            if limit == 0 {
+                break;
+            }
+            let conn_ids = pool
+                .registry
+                .bound_conn_ids_for_writer_limited(writer.id, limit)
+                .await;
+            if conn_ids.is_empty() {
+                continue;
+            }
+
+            let mut evicted_for_writer = 0usize;
+            for conn_id in conn_ids {
+                if pool.registry.evict_bound_conn_if_writer(conn_id, writer.id).await {
+                    evicted_for_writer = evicted_for_writer.saturating_add(1);
+                    soft_evicted_total = soft_evicted_total.saturating_add(1);
+                    pool.stats.increment_pool_drain_soft_evict_total();
+                    if soft_evicted_total >= soft_budget {
+                        break;
+                    }
+                }
+            }
+
+            if evicted_for_writer > 0 {
+                pool.stats.increment_pool_drain_soft_evict_writer_total();
+                info!(
+                    writer_id = writer.id,
+                    writer_dc = writer.writer_dc,
+                    endpoint = %writer.addr,
+                    drained_connections = evicted_for_writer,
+                    soft_budget,
+                    soft_trigger_age_secs,
+                    "ME draining writer soft-evicted bound clients"
+                );
+            }
+        }
+    }
 
     let close_budget = health_drain_close_budget();
     let requested_force_close = force_close_writer_ids.len();
@@ -256,6 +345,19 @@ pub(super) fn health_drain_close_budget() -> usize {
     cpu_cores
         .saturating_mul(HEALTH_DRAIN_CLOSE_BUDGET_PER_CORE)
         .clamp(HEALTH_DRAIN_CLOSE_BUDGET_MIN, HEALTH_DRAIN_CLOSE_BUDGET_MAX)
+}
+
+pub(super) fn health_drain_soft_evict_budget(pool: &MePool) -> usize {
+    let cpu_cores = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let per_core = pool.drain_soft_evict_budget_per_core();
+    cpu_cores
+        .saturating_mul(per_core)
+        .clamp(
+            HEALTH_DRAIN_SOFT_EVICT_BUDGET_MIN,
+            HEALTH_DRAIN_SOFT_EVICT_BUDGET_MAX,
+        )
 }
 
 fn should_emit_writer_warn(
@@ -1443,6 +1545,11 @@ mod tests {
             general.hardswap,
             general.me_pool_drain_ttl_secs,
             general.me_pool_drain_threshold,
+            general.me_pool_drain_soft_evict_enabled,
+            general.me_pool_drain_soft_evict_grace_secs,
+            general.me_pool_drain_soft_evict_per_writer,
+            general.me_pool_drain_soft_evict_budget_per_core,
+            general.me_pool_drain_soft_evict_cooldown_ms,
             general.effective_me_pool_force_close_secs(),
             general.me_pool_min_fresh_ratio,
             general.me_hardswap_warmup_delay_min_ms,
@@ -1524,8 +1631,9 @@ mod tests {
         let conn_b = insert_draining_writer(&pool, 20, now_epoch_secs.saturating_sub(20)).await;
         let conn_c = insert_draining_writer(&pool, 30, now_epoch_secs.saturating_sub(10)).await;
         let mut warn_next_allowed = HashMap::new();
+        let mut soft_evict_next_allowed = HashMap::new();
 
-        reap_draining_writers(&pool, &mut warn_next_allowed).await;
+        reap_draining_writers(&pool, &mut warn_next_allowed, &mut soft_evict_next_allowed).await;
 
         let writer_ids: Vec<u64> = pool.writers.read().await.iter().map(|writer| writer.id).collect();
         assert_eq!(writer_ids, vec![20, 30]);
@@ -1542,8 +1650,9 @@ mod tests {
         let conn_b = insert_draining_writer(&pool, 20, now_epoch_secs.saturating_sub(20)).await;
         let conn_c = insert_draining_writer(&pool, 30, now_epoch_secs.saturating_sub(10)).await;
         let mut warn_next_allowed = HashMap::new();
+        let mut soft_evict_next_allowed = HashMap::new();
 
-        reap_draining_writers(&pool, &mut warn_next_allowed).await;
+        reap_draining_writers(&pool, &mut warn_next_allowed, &mut soft_evict_next_allowed).await;
 
         let writer_ids: Vec<u64> = pool.writers.read().await.iter().map(|writer| writer.id).collect();
         assert_eq!(writer_ids, vec![10, 20, 30]);

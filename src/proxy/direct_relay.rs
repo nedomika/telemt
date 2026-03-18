@@ -18,6 +18,8 @@ use crate::proxy::route_mode::{
     RelayRouteMode, RouteCutoverState, ROUTE_SWITCH_ERROR_MSG, affected_cutover_state,
     cutover_stagger_delay,
 };
+use crate::proxy::adaptive_buffers;
+use crate::proxy::session_eviction::SessionLease;
 use crate::stats::Stats;
 use crate::stream::{BufferPool, CryptoReader, CryptoWriter};
 use crate::transport::UpstreamManager;
@@ -34,6 +36,7 @@ pub(crate) async fn handle_via_direct<R, W>(
     mut route_rx: watch::Receiver<RouteCutoverState>,
     route_snapshot: RouteCutoverState,
     session_id: u64,
+    session_lease: SessionLease,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -67,16 +70,26 @@ where
     stats.increment_user_curr_connects(user);
     stats.increment_current_connections_direct();
 
+    let seed_tier = adaptive_buffers::seed_tier_for_user(user);
+    let (c2s_copy_buf, s2c_copy_buf) = adaptive_buffers::direct_copy_buffers_for_tier(
+        seed_tier,
+        config.general.direct_relay_copy_buf_c2s_bytes,
+        config.general.direct_relay_copy_buf_s2c_bytes,
+    );
+
     let relay_result = relay_bidirectional(
         client_reader,
         client_writer,
         tg_reader,
         tg_writer,
-        config.general.direct_relay_copy_buf_c2s_bytes,
-        config.general.direct_relay_copy_buf_s2c_bytes,
+        c2s_copy_buf,
+        s2c_copy_buf,
         user,
+        success.dc_idx,
         Arc::clone(&stats),
         buffer_pool,
+        session_lease,
+        seed_tier,
     );
     tokio::pin!(relay_result);
     let relay_result = loop {

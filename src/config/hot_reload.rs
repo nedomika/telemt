@@ -56,6 +56,11 @@ pub struct HotFields {
     pub hardswap:                bool,
     pub me_pool_drain_ttl_secs:  u64,
     pub me_pool_drain_threshold: u64,
+    pub me_pool_drain_soft_evict_enabled: bool,
+    pub me_pool_drain_soft_evict_grace_secs: u64,
+    pub me_pool_drain_soft_evict_per_writer: u8,
+    pub me_pool_drain_soft_evict_budget_per_core: u16,
+    pub me_pool_drain_soft_evict_cooldown_ms: u64,
     pub me_pool_min_fresh_ratio: f32,
     pub me_reinit_drain_timeout_secs: u64,
     pub me_hardswap_warmup_delay_min_ms: u64,
@@ -138,6 +143,15 @@ impl HotFields {
             hardswap:                cfg.general.hardswap,
             me_pool_drain_ttl_secs:  cfg.general.me_pool_drain_ttl_secs,
             me_pool_drain_threshold: cfg.general.me_pool_drain_threshold,
+            me_pool_drain_soft_evict_enabled: cfg.general.me_pool_drain_soft_evict_enabled,
+            me_pool_drain_soft_evict_grace_secs: cfg.general.me_pool_drain_soft_evict_grace_secs,
+            me_pool_drain_soft_evict_per_writer: cfg.general.me_pool_drain_soft_evict_per_writer,
+            me_pool_drain_soft_evict_budget_per_core: cfg
+                .general
+                .me_pool_drain_soft_evict_budget_per_core,
+            me_pool_drain_soft_evict_cooldown_ms: cfg
+                .general
+                .me_pool_drain_soft_evict_cooldown_ms,
             me_pool_min_fresh_ratio: cfg.general.me_pool_min_fresh_ratio,
             me_reinit_drain_timeout_secs: cfg.general.me_reinit_drain_timeout_secs,
             me_hardswap_warmup_delay_min_ms: cfg.general.me_hardswap_warmup_delay_min_ms,
@@ -455,6 +469,15 @@ fn overlay_hot_fields(old: &ProxyConfig, new: &ProxyConfig) -> ProxyConfig {
     cfg.general.hardswap = new.general.hardswap;
     cfg.general.me_pool_drain_ttl_secs = new.general.me_pool_drain_ttl_secs;
     cfg.general.me_pool_drain_threshold = new.general.me_pool_drain_threshold;
+    cfg.general.me_pool_drain_soft_evict_enabled = new.general.me_pool_drain_soft_evict_enabled;
+    cfg.general.me_pool_drain_soft_evict_grace_secs =
+        new.general.me_pool_drain_soft_evict_grace_secs;
+    cfg.general.me_pool_drain_soft_evict_per_writer =
+        new.general.me_pool_drain_soft_evict_per_writer;
+    cfg.general.me_pool_drain_soft_evict_budget_per_core =
+        new.general.me_pool_drain_soft_evict_budget_per_core;
+    cfg.general.me_pool_drain_soft_evict_cooldown_ms =
+        new.general.me_pool_drain_soft_evict_cooldown_ms;
     cfg.general.me_pool_min_fresh_ratio = new.general.me_pool_min_fresh_ratio;
     cfg.general.me_reinit_drain_timeout_secs = new.general.me_reinit_drain_timeout_secs;
     cfg.general.me_hardswap_warmup_delay_min_ms = new.general.me_hardswap_warmup_delay_min_ms;
@@ -833,6 +856,25 @@ fn log_changes(
         info!(
             "config reload: me_pool_drain_threshold: {} → {}",
             old_hot.me_pool_drain_threshold, new_hot.me_pool_drain_threshold,
+        );
+    }
+    if old_hot.me_pool_drain_soft_evict_enabled != new_hot.me_pool_drain_soft_evict_enabled
+        || old_hot.me_pool_drain_soft_evict_grace_secs
+            != new_hot.me_pool_drain_soft_evict_grace_secs
+        || old_hot.me_pool_drain_soft_evict_per_writer
+            != new_hot.me_pool_drain_soft_evict_per_writer
+        || old_hot.me_pool_drain_soft_evict_budget_per_core
+            != new_hot.me_pool_drain_soft_evict_budget_per_core
+        || old_hot.me_pool_drain_soft_evict_cooldown_ms
+            != new_hot.me_pool_drain_soft_evict_cooldown_ms
+    {
+        info!(
+            "config reload: me_pool_drain_soft_evict: enabled={} grace={}s per_writer={} budget_per_core={} cooldown={}ms",
+            new_hot.me_pool_drain_soft_evict_enabled,
+            new_hot.me_pool_drain_soft_evict_grace_secs,
+            new_hot.me_pool_drain_soft_evict_per_writer,
+            new_hot.me_pool_drain_soft_evict_budget_per_core,
+            new_hot.me_pool_drain_soft_evict_cooldown_ms
         );
     }
 

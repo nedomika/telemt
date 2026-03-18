@@ -120,6 +120,8 @@ pub struct Stats {
     pool_swap_total: AtomicU64,
     pool_drain_active: AtomicU64,
     pool_force_close_total: AtomicU64,
+    pool_drain_soft_evict_total: AtomicU64,
+    pool_drain_soft_evict_writer_total: AtomicU64,
     pool_stale_pick_total: AtomicU64,
     me_writer_removed_total: AtomicU64,
     me_writer_removed_unexpected_total: AtomicU64,
@@ -133,6 +135,11 @@ pub struct Stats {
     me_inline_recovery_total: AtomicU64,
     ip_reservation_rollback_tcp_limit_total: AtomicU64,
     ip_reservation_rollback_quota_limit_total: AtomicU64,
+    relay_adaptive_promotions_total: AtomicU64,
+    relay_adaptive_demotions_total: AtomicU64,
+    relay_adaptive_hard_promotions_total: AtomicU64,
+    reconnect_evict_total: AtomicU64,
+    reconnect_stale_close_total: AtomicU64,
     telemetry_core_enabled: AtomicBool,
     telemetry_user_enabled: AtomicBool,
     telemetry_me_level: AtomicU8,
@@ -284,6 +291,36 @@ impl Stats {
     }
     pub fn decrement_current_connections_me(&self) {
         Self::decrement_atomic_saturating(&self.current_connections_me);
+    }
+    pub fn increment_relay_adaptive_promotions_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.relay_adaptive_promotions_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_relay_adaptive_demotions_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.relay_adaptive_demotions_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_relay_adaptive_hard_promotions_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.relay_adaptive_hard_promotions_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_reconnect_evict_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.reconnect_evict_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_reconnect_stale_close_total(&self) {
+        if self.telemetry_core_enabled() {
+            self.reconnect_stale_close_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
     pub fn increment_handshake_timeouts(&self) {
         if self.telemetry_core_enabled() {
@@ -680,6 +717,18 @@ impl Stats {
             self.pool_force_close_total.fetch_add(1, Ordering::Relaxed);
         }
     }
+    pub fn increment_pool_drain_soft_evict_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.pool_drain_soft_evict_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_pool_drain_soft_evict_writer_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.pool_drain_soft_evict_writer_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
     pub fn increment_pool_stale_pick_total(&self) {
         if self.telemetry_me_allows_normal() {
             self.pool_stale_pick_total.fetch_add(1, Ordering::Relaxed);
@@ -933,6 +982,22 @@ impl Stats {
         self.get_current_connections_direct()
             .saturating_add(self.get_current_connections_me())
     }
+    pub fn get_relay_adaptive_promotions_total(&self) -> u64 {
+        self.relay_adaptive_promotions_total.load(Ordering::Relaxed)
+    }
+    pub fn get_relay_adaptive_demotions_total(&self) -> u64 {
+        self.relay_adaptive_demotions_total.load(Ordering::Relaxed)
+    }
+    pub fn get_relay_adaptive_hard_promotions_total(&self) -> u64 {
+        self.relay_adaptive_hard_promotions_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_reconnect_evict_total(&self) -> u64 {
+        self.reconnect_evict_total.load(Ordering::Relaxed)
+    }
+    pub fn get_reconnect_stale_close_total(&self) -> u64 {
+        self.reconnect_stale_close_total.load(Ordering::Relaxed)
+    }
     pub fn get_me_keepalive_sent(&self) -> u64 { self.me_keepalive_sent.load(Ordering::Relaxed) }
     pub fn get_me_keepalive_failed(&self) -> u64 { self.me_keepalive_failed.load(Ordering::Relaxed) }
     pub fn get_me_keepalive_pong(&self) -> u64 { self.me_keepalive_pong.load(Ordering::Relaxed) }
@@ -1185,6 +1250,12 @@ impl Stats {
     pub fn get_pool_force_close_total(&self) -> u64 {
         self.pool_force_close_total.load(Ordering::Relaxed)
     }
+    pub fn get_pool_drain_soft_evict_total(&self) -> u64 {
+        self.pool_drain_soft_evict_total.load(Ordering::Relaxed)
+    }
+    pub fn get_pool_drain_soft_evict_writer_total(&self) -> u64 {
+        self.pool_drain_soft_evict_writer_total.load(Ordering::Relaxed)
+    }
     pub fn get_pool_stale_pick_total(&self) -> u64 {
         self.pool_stale_pick_total.load(Ordering::Relaxed)
     }
@@ -1258,6 +1329,9 @@ impl Stats {
     }
     
     pub fn decrement_user_curr_connects(&self, user: &str) {
+        if !self.telemetry_user_enabled() {
+            return;
+        }
         self.maybe_cleanup_user_stats();
         if let Some(stats) = self.user_stats.get(user) {
             Self::touch_user_stats(stats.value());

@@ -406,6 +406,35 @@ impl ProxyConfig {
             ));
         }
 
+        if config.general.me_pool_drain_soft_evict_grace_secs > 3600 {
+            return Err(ProxyError::Config(
+                "general.me_pool_drain_soft_evict_grace_secs must be within [0, 3600]".to_string(),
+            ));
+        }
+
+        if config.general.me_pool_drain_soft_evict_per_writer == 0
+            || config.general.me_pool_drain_soft_evict_per_writer > 16
+        {
+            return Err(ProxyError::Config(
+                "general.me_pool_drain_soft_evict_per_writer must be within [1, 16]".to_string(),
+            ));
+        }
+
+        if config.general.me_pool_drain_soft_evict_budget_per_core == 0
+            || config.general.me_pool_drain_soft_evict_budget_per_core > 64
+        {
+            return Err(ProxyError::Config(
+                "general.me_pool_drain_soft_evict_budget_per_core must be within [1, 64]"
+                    .to_string(),
+            ));
+        }
+
+        if config.general.me_pool_drain_soft_evict_cooldown_ms == 0 {
+            return Err(ProxyError::Config(
+                "general.me_pool_drain_soft_evict_cooldown_ms must be > 0".to_string(),
+            ));
+        }
+
         if config.access.user_max_unique_ips_window_secs == 0 {
             return Err(ProxyError::Config(
                 "access.user_max_unique_ips_window_secs must be > 0".to_string(),
